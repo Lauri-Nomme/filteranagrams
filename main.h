@@ -17,7 +17,7 @@ typedef struct {
 #define RECORD_SEP '\r'
 #define RECORD_SEP_LEN 2
 
-#if (defined(sysconf) && defined(_SC_NPROCESSORS_ONLN))
+#if defined(_SC_NPROCESSORS_ONLN)
 #define nprocs sysconf(_SC_NPROCESSORS_ONLN)
 #else
 #define nprocs 1

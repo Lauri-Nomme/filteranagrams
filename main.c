@@ -69,7 +69,7 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *
 
 void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                       int needleLen, char **results, bool alignStart) {
-    __m128i uniqueCharsB = _mm_loadu_si128((const __m128i_u *) uniqueChars);
+    __m128i uniqueCharsB = _mm_loadu_si128((const __m128i *) uniqueChars);
     __m128i recordSepB = _mm_set1_epi8(RECORD_SEP);
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
@@ -89,7 +89,7 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
 
     while (true) {
         __m128i haystackB;
-        haystackB = _mm_loadu_si128((const __m128i_u *) i);
+        haystackB = _mm_loadu_si128((const __m128i *) i);
         int index = _mm_cmpestri(uniqueCharsB, uniqueCharsLen, haystackB, 16,
                                  _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT |
                                  _SIDD_NEGATIVE_POLARITY);
@@ -129,7 +129,7 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
                 } else {
                     i += 16;
                     nextRecord:
-                    haystackB = _mm_loadu_si128((const __m128i_u *) i);
+                    haystackB = _mm_loadu_si128((const __m128i *) i);
                 }
             } while (true);
         }
@@ -191,8 +191,10 @@ int main(int argc, char **argv) {
     }
 
     int partitions = nprocs;
-    if (argc > 3)
-        partitions = min(partitions, atoi(argv[3]));
+    if (argc > 3) {
+	fprintf(stderr, "using %i partitions instead of %i\n", atoi(argv[3]), partitions);
+        partitions = atoi(argv[3]);
+    }
 
     t_partitionResult results[partitions];
     pthread_t threads[partitions - 1];
