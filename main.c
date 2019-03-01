@@ -8,46 +8,65 @@
 #include <string.h>
 #include <pthread.h>
 
-typedef char *t_partitionResult[16386 * 2];
+typedef char* t_partitionResult[16386 * 2];
 typedef struct {
     int fd;
     int start;
     int end;
-    char *charCounts;
+    char* charCounts;
+    char* uniqueChars;
+    int uniqueCharsLen;
     int needleLen;
-    char **results;
+    char** results;
 } t_partition;
 
-long duration(struct timeval *start, struct timeval *end);
+long duration(struct timeval* start, struct timeval* end);
 
-void printResults(long duration, t_partitionResult *results, int partitions);
+void printResults(long duration, t_partitionResult* results, int partitions);
 
-void *processPartition(t_partition *partition);
+void* processPartition(t_partition* partition);
 
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], int needleLen, char **results, bool alignStart);
+void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+                  int needleLen, char** results, bool alignStart);
 
 #define min(l, r) ((l) < (r) ? (l) : (r))
 #define RECORD_SEP '\r'
 #define RECORD_SEP_LEN 2
 
-int main(int argc, char **argv) {
+#if defined(sysconf) && defined(_SC_NPROCESSORS_ONLN)
+#define nprocs sysconf(_SC_NPROCESSORS_ONLN)
+#else
+#define nprocs 1
+#endif
+
+#if defined(_WIN32_WINNT)
+#define fno(f) f->_file
+#else
+#define fno(f) f->_fileno
+#endif
+
+int main(int argc, char** argv) {
     struct timeval startTime, endTime;
     gettimeofday(&startTime, NULL);
 
-    FILE *f = fopen(argv[1], "rb");
+    FILE* f = fopen(argv[1], "rb");
     fseek(f, 0, SEEK_END);
     long dictSize = ftell(f);
     rewind(f);
 
-    char *needle = argv[2];
+    char* needle = argv[2];
     int needleLen = 0;
     char charCounts[256] = {};
+    char uniqueChars[256] = {};
+    int uniqueCharsLen = 0;
     for (int i = 0; needle[i]; ++i) {
-        ++charCounts[needle[i]];
+        if (!charCounts[needle[i]]++) {
+            uniqueChars[uniqueCharsLen++] = needle[i];
+        }
         ++needleLen;
     }
 
-    int partitions = sysconf(_SC_NPROCESSORS_ONLN);
+    int partitions = nprocs;
     if (argc > 3)
         partitions = min(partitions, atoi(argv[3]));
 
@@ -58,19 +77,21 @@ int main(int argc, char **argv) {
     int partitionSize = dictSize / partitions;
 
     for (int p = 1; p < partitions; ++p) {
-        partitionSpecs[p - 1] = (t_partition) {
-                .fd = f->_fileno,
+        partitionSpecs[p - 1] = (t_partition){
+                .fd = fno(f),
                 .start = p * partitionSize,
                 .end = min((p + 1) * partitionSize, dictSize),
                 .charCounts = charCounts,
+                .uniqueChars = uniqueChars,
+                .uniqueCharsLen = uniqueCharsLen,
                 .needleLen = needleLen,
                 .results = results[p]
         };
-        pthread_create(&threads[p - 1], NULL, (void *(*)(void *)) processPartition, &partitionSpecs[p - 1]);
+        pthread_create(&threads[p - 1], NULL, (void* (*)(void*))processPartition, &partitionSpecs[p - 1]);
 
     }
 
-    findAnagrams(f->_fileno, 0, partitionSize, charCounts, needleLen, results[0], false);
+    findAnagrams(fno(f), 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0], false);
 
     for (int p = 0; p < partitions; ++p) {
         pthread_join(threads[p], NULL);
@@ -80,24 +101,26 @@ int main(int argc, char **argv) {
     printResults(duration(&startTime, &endTime), results, partitions);
 }
 
-void *processPartition(t_partition *partition) {
-    findAnagrams(partition->fd, partition->start, partition->end, partition->charCounts, partition->needleLen, partition->results, true);
+void* processPartition(t_partition* partition) {
+    findAnagrams(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
+                 partition->uniqueCharsLen, partition->needleLen, partition->results, true);
 }
 
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], int needleLen, char **results, bool alignStart) {
+void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+                  int needleLen, char** results, bool alignStart) {
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t *buf = malloc(end - start);
-    uint8_t *bufStart = buf;
-    uint8_t *bufEnd = &buf[end - start];
+    uint8_t* buf = malloc(end - start);
+    uint8_t* bufStart = buf;
+    uint8_t* bufEnd = &buf[end - start];
 
-    FILE *f = fdopen(fd, "rb");
+    FILE* f = fdopen(fd, "rb");
     fseek(f, start, SEEK_SET);
     fread(buf, 1, end - start, f);
 
     results[0] = 0;
     int resultIndex = 0;
-    uint8_t *i = bufStart;
+    uint8_t* i = bufStart;
     if (alignStart)
         goto nextRecord;
 
@@ -106,8 +129,8 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], int ne
         uint8_t c = *i;
         if (c == RECORD_SEP) {
             if (len == needleLen) {
-                results[resultIndex++] = (char *) bufStart;
-                *(int *) &results[resultIndex++] = len;
+                results[resultIndex++] = (char*)bufStart;
+                *(int*)&results[resultIndex++] = len;
                 results[resultIndex] = 0;
             }
 
@@ -124,7 +147,7 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], int ne
         }
         continue;
         advance:
-        for (uint8_t *j = bufStart; j <= i; ++j) {
+        for (uint8_t* j = bufStart; j <= i; ++j) {
             ++charCounts[*j];
         }
         nextRecord:
@@ -140,16 +163,16 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], int ne
     }
 }
 
-void printResults(long duration, t_partitionResult *results, int partitions) {
+void printResults(long duration, t_partitionResult* results, int partitions) {
     printf("%ld", duration);
     for (short p = 0; p < partitions; ++p) {
         for (short i = 0; results[p][i]; i += 2) {
-            printf(",%.*s", *(int *) &results[p][i + 1], results[p][i]);
+            printf(",%.*s", *(int*)&results[p][i + 1], results[p][i]);
         }
     }
     printf("\n");
 }
 
-long duration(struct timeval *start, struct timeval *end) {
+long duration(struct timeval* start, struct timeval* end) {
     return ((end->tv_sec - start->tv_sec) * 1000000) + (end->tv_usec - start->tv_usec);
 }
