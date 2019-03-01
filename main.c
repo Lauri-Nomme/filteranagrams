@@ -7,54 +7,178 @@
 #include <stdbool.h>
 #include <string.h>
 #include <pthread.h>
+#include <emmintrin.h>
+#include <smmintrin.h>
+#include "main.h"
 
-typedef char* t_partitionResult[16386 * 2];
-typedef struct {
-    int fd;
-    int start;
-    int end;
-    char* charCounts;
-    char* uniqueChars;
-    int uniqueCharsLen;
-    int needleLen;
-    char** results;
-} t_partition;
+void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+                  int needleLen, char **results, bool alignStart) {
+    char charCounts[256];
+    memcpy(charCounts, needleCharCounts, sizeof(charCounts));
+    uint8_t *buf = malloc(end - start);
+    uint8_t *bufStart = buf;
+    uint8_t *bufEnd = &buf[end - start];
 
-long duration(struct timeval* start, struct timeval* end);
+    FILE *f = fdopen(fd, "rb");
+    fseek(f, start, SEEK_SET);
+    fread(buf, 1, end - start, f);
 
-void printResults(long duration, t_partitionResult* results, int partitions);
+    int resultIndex = 0;
+    uint8_t *i = bufStart;
+    if (alignStart)
+        goto nextRecord;
 
-void* processPartition(t_partition* partition);
+    int len = 0;
+    while (true) {
+        uint8_t c = *i;
+        if (c == RECORD_SEP) {
+            if (len == needleLen) {
+                results[resultIndex++] = (char *) bufStart;
+                *(int *) &results[resultIndex++] = len;
+            }
 
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
-                  int needleLen, char** results, bool alignStart);
+            goto advance;
+        } else {
+            if (0 > --charCounts[c]) {
+                goto advance;
+            } else {
+                if (++len > needleLen) {
+                    goto advance;
+                }
+                ++i;
+            }
+        }
+        continue;
+        advance:
+        for (uint8_t *j = bufStart; j <= i; ++j) {
+            ++charCounts[*j];
+        }
+        nextRecord:
+        while (i < bufEnd && *i != RECORD_SEP) {
+            ++i;
+        }
+        i += RECORD_SEP_LEN;
+        if (i > bufEnd) {
+            results[resultIndex] = 0;
+            return;
+        }
+        bufStart = i;
+        len = 0;
+    }
+}
 
-#define min(l, r) ((l) < (r) ? (l) : (r))
-#define RECORD_SEP '\r'
-#define RECORD_SEP_LEN 2
+void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+                      int needleLen, char **results, bool alignStart) {
+    __m128i uniqueCharsB = _mm_loadu_si128((const __m128i_u *) uniqueChars);
+    __m128i recordSepB = _mm_set1_epi8(RECORD_SEP);
+    char charCounts[256];
+    memcpy(charCounts, needleCharCounts, sizeof(charCounts));
+    uint8_t *buf = malloc(end - start + 16);
+    uint8_t *bufStart = buf;
+    uint8_t *bufEnd = &buf[end - start];
 
-#if defined(sysconf) && defined(_SC_NPROCESSORS_ONLN)
-#define nprocs sysconf(_SC_NPROCESSORS_ONLN)
-#else
-#define nprocs 1
-#endif
+    FILE *f = fdopen(fd, "rb");
+    fseek(f, start, SEEK_SET);
+    fread(buf, 1, end - start, f);
 
-#if defined(_WIN32_WINNT)
-#define fno(f) f->_file
-#else
-#define fno(f) f->_fileno
-#endif
+    int resultIndex = 0;
+    uint8_t *i = bufStart;
 
-int main(int argc, char** argv) {
+    if (alignStart)
+        goto nextRecord;
+
+    while (true) {
+        __m128i haystackB;
+        haystackB = _mm_loadu_si128((const __m128i_u *) i);
+        int index = _mm_cmpestri(uniqueCharsB, uniqueCharsLen, haystackB, 16,
+                                 _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT |
+                                 _SIDD_NEGATIVE_POLARITY);
+
+        // @todo matching >= 16 chars
+        if (i[index] == RECORD_SEP) {
+            char *recordStart = i;
+            int len = 0;
+            do {
+                char c = *i;
+                if (c == RECORD_SEP) {
+                    if (len == needleLen) {
+                        results[resultIndex++] = recordStart;
+                        *(int *) &results[resultIndex++] = len;
+                    }
+                    for (uint8_t *j = recordStart; j < i; ++j) {
+                        ++charCounts[*j];
+                    }
+                    i += RECORD_SEP_LEN;
+                    goto begin;
+                } else if (0 > --charCounts[c] || ++len > needleLen) {
+                    for (uint8_t *j = recordStart; j <= i; ++j) {
+                        ++charCounts[*j];
+                    }
+                    ++i;
+                    goto nextRecord;
+                }
+                ++i;
+            } while (true);
+        } else {
+            do {
+                index = _mm_cmpestri(recordSepB, 1, haystackB, 16,
+                                     _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
+                if (index < 16) {
+                    i += index + RECORD_SEP_LEN;
+                    break;
+                } else {
+                    i += 16;
+                    nextRecord:
+                    haystackB = _mm_loadu_si128((const __m128i_u *) i);
+                }
+            } while (true);
+        }
+        begin:
+        if (i >= bufEnd) {
+            results[resultIndex] = 0;
+            return;
+        }
+    }
+}
+
+void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+                          int needleLen, char **results, bool alignStart) {
+    if (uniqueCharsLen <= 16 && 0 == getenv("NO_STNI")) {
+        findAnagramsStni(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+    } else {
+        findAnagrams(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+    }
+}
+
+void *processPartition(t_partition *partition) {
+    findAnagramsDispatch(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
+                         partition->uniqueCharsLen, partition->needleLen, partition->results, true);
+}
+
+void printResults(long duration, t_partitionResult *results, int partitions) {
+    printf("%ld", duration);
+    for (short p = 0; p < partitions; ++p) {
+        for (short i = 0; results[p][i]; i += 2) {
+            printf(",%.*s", *(int *) &results[p][i + 1], results[p][i]);
+        }
+    }
+    printf("\n");
+}
+
+long duration(struct timeval *start, struct timeval *end) {
+    return ((end->tv_sec - start->tv_sec) * 1000000) + (end->tv_usec - start->tv_usec);
+}
+
+int main(int argc, char **argv) {
     struct timeval startTime, endTime;
     gettimeofday(&startTime, NULL);
 
-    FILE* f = fopen(argv[1], "rb");
+    FILE *f = fopen(argv[1], "rb");
     fseek(f, 0, SEEK_END);
     long dictSize = ftell(f);
     rewind(f);
 
-    char* needle = argv[2];
+    char *needle = argv[2];
     int needleLen = 0;
     char charCounts[256] = {};
     char uniqueChars[256] = {};
@@ -77,7 +201,7 @@ int main(int argc, char** argv) {
     int partitionSize = dictSize / partitions;
 
     for (int p = 1; p < partitions; ++p) {
-        partitionSpecs[p - 1] = (t_partition){
+        partitionSpecs[p - 1] = (t_partition) {
                 .fd = fno(f),
                 .start = p * partitionSize,
                 .end = min((p + 1) * partitionSize, dictSize),
@@ -87,92 +211,17 @@ int main(int argc, char** argv) {
                 .needleLen = needleLen,
                 .results = results[p]
         };
-        pthread_create(&threads[p - 1], NULL, (void* (*)(void*))processPartition, &partitionSpecs[p - 1]);
+        pthread_create(&threads[p - 1], NULL, (void *(*)(void *)) processPartition, &partitionSpecs[p - 1]);
 
     }
 
-    findAnagrams(fno(f), 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0], false);
+    findAnagramsDispatch(fno(f), 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
+                         false);
 
-    for (int p = 0; p < partitions; ++p) {
-        pthread_join(threads[p], NULL);
+    for (int p = 1; p < partitions; ++p) {
+        pthread_join(threads[p - 1], NULL);
     }
 
     gettimeofday(&endTime, NULL);
     printResults(duration(&startTime, &endTime), results, partitions);
-}
-
-void* processPartition(t_partition* partition) {
-    findAnagrams(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
-                 partition->uniqueCharsLen, partition->needleLen, partition->results, true);
-}
-
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
-                  int needleLen, char** results, bool alignStart) {
-    char charCounts[256];
-    memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t* buf = malloc(end - start);
-    uint8_t* bufStart = buf;
-    uint8_t* bufEnd = &buf[end - start];
-
-    FILE* f = fdopen(fd, "rb");
-    fseek(f, start, SEEK_SET);
-    fread(buf, 1, end - start, f);
-
-    results[0] = 0;
-    int resultIndex = 0;
-    uint8_t* i = bufStart;
-    if (alignStart)
-        goto nextRecord;
-
-    int len = 0;
-    while (true) {
-        uint8_t c = *i;
-        if (c == RECORD_SEP) {
-            if (len == needleLen) {
-                results[resultIndex++] = (char*)bufStart;
-                *(int*)&results[resultIndex++] = len;
-                results[resultIndex] = 0;
-            }
-
-            goto advance;
-        } else {
-            if (0 > --charCounts[c]) {
-                goto advance;
-            } else {
-                if (++len > needleLen) {
-                    goto advance;
-                }
-                ++i;
-            }
-        }
-        continue;
-        advance:
-        for (uint8_t* j = bufStart; j <= i; ++j) {
-            ++charCounts[*j];
-        }
-        nextRecord:
-        while (i < bufEnd && *i != RECORD_SEP) {
-            ++i;
-        }
-        i += RECORD_SEP_LEN;
-        if (i > bufEnd) {
-            return;
-        }
-        bufStart = i;
-        len = 0;
-    }
-}
-
-void printResults(long duration, t_partitionResult* results, int partitions) {
-    printf("%ld", duration);
-    for (short p = 0; p < partitions; ++p) {
-        for (short i = 0; results[p][i]; i += 2) {
-            printf(",%.*s", *(int*)&results[p][i + 1], results[p][i]);
-        }
-    }
-    printf("\n");
-}
-
-long duration(struct timeval* start, struct timeval* end) {
-    return ((end->tv_sec - start->tv_sec) * 1000000) + (end->tv_usec - start->tv_usec);
 }
