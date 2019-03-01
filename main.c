@@ -11,7 +11,7 @@
 #include <smmintrin.h>
 #include "main.h"
 
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+void findAnagrams(char* fn, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                   int needleLen, char **results, bool alignStart) {
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
@@ -19,7 +19,7 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *
     uint8_t *bufStart = buf;
     uint8_t *bufEnd = &buf[end - start];
 
-    FILE *f = fdopen(fd, "rb");
+    FILE *f = fopen(fn, "rb");
     fseek(f, start, SEEK_SET);
     fread(buf, 1, end - start, f);
 
@@ -67,8 +67,11 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *
     }
 }
 
-void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+void findAnagramsStni(char* fn, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                       int needleLen, char **results, bool alignStart) {
+#ifdef DEBUG
+    fprintf(stderr, "start partition@%016X-%016X\n", start, end);
+#endif
     __m128i uniqueCharsB = _mm_loadu_si128((const __m128i *) uniqueChars);
     __m128i recordSepB = _mm_set1_epi8(RECORD_SEP);
     char charCounts[256];
@@ -77,7 +80,7 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
     uint8_t *bufStart = buf;
     uint8_t *bufEnd = &buf[end - start];
 
-    FILE *f = fdopen(fd, "rb");
+    FILE *f = fopen(fn, "rb");
     fseek(f, start, SEEK_SET);
     fread(buf, 1, end - start, f);
 
@@ -102,6 +105,9 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
                 char c = *i;
                 if (c == RECORD_SEP) {
                     if (len == needleLen) {
+#ifdef DEBUG
+                        fprintf(stderr, "partition@%016X inserting result@%08X[%i] = %016X (%i)\n", start, results, resultIndex, recordStart, len);
+#endif
                         results[resultIndex++] = recordStart;
                         *(int *) &results[resultIndex++] = len;
                     }
@@ -141,24 +147,30 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
     }
 }
 
-void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+void findAnagramsDispatch(char* fn, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                           int needleLen, char **results, bool alignStart) {
     if (uniqueCharsLen <= 16 && 0 == getenv("NO_STNI")) {
-        findAnagramsStni(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+        findAnagramsStni(fn, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     } else {
-        findAnagrams(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+        findAnagrams(fn, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     }
 }
 
 void *processPartition(t_partition *partition) {
-    findAnagramsDispatch(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
+    findAnagramsDispatch(partition->fn, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
                          partition->uniqueCharsLen, partition->needleLen, partition->results, true);
 }
 
 void printResults(long duration, t_partitionResult *results, int partitions) {
     printf("%ld", duration);
     for (short p = 0; p < partitions; ++p) {
+#ifdef DEBUG
+        fprintf(stderr, "results for partition %i at %016X\n", p, results[p]);
+#endif
         for (short i = 0; results[p][i]; i += 2) {
+#ifdef DEBUG
+            fprintf(stderr, "[%i] = %016X\n", i, results[p][i]);
+#endif
             printf(",%.*s", *(int *) &results[p][i + 1], results[p][i]);
         }
     }
@@ -192,7 +204,7 @@ int main(int argc, char **argv) {
 
     int partitions = nprocs;
     if (argc > 3) {
-	fprintf(stderr, "using %i partitions instead of %i\n", atoi(argv[3]), partitions);
+        fprintf(stderr, "using %i partitions instead of %i\n", atoi(argv[3]), partitions);
         partitions = atoi(argv[3]);
     }
 
@@ -204,7 +216,7 @@ int main(int argc, char **argv) {
 
     for (int p = 1; p < partitions; ++p) {
         partitionSpecs[p - 1] = (t_partition) {
-                .fd = fno(f),
+                .fn = argv[1],
                 .start = p * partitionSize,
                 .end = min((p + 1) * partitionSize, dictSize),
                 .charCounts = charCounts,
@@ -217,7 +229,7 @@ int main(int argc, char **argv) {
 
     }
 
-    findAnagramsDispatch(fno(f), 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
+    findAnagramsDispatch(argv[1], 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
                          false);
 
     for (int p = 1; p < partitions; ++p) {

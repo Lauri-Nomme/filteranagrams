@@ -3,7 +3,7 @@
 
 typedef char *t_partitionResult[16386 * 2];
 typedef struct {
-    int fd;
+    char* fn;
     int start;
     int end;
     char *charCounts;
@@ -21,12 +21,6 @@ typedef struct {
 #define nprocs sysconf(_SC_NPROCESSORS_ONLN)
 #else
 #define nprocs 1
-#endif
-
-#if defined(_WIN32_WINNT)
-#define fno(f) f->_file
-#else
-#define fno(f) f->_fileno
 #endif
 
 #endif //FA_MAIN_H
