@@ -77,7 +77,7 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
     __m128i recordSepB = _mm_set1_epi8(RECORD_SEP);
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t *buf = malloc(end - start + 16);
+    uint8_t *buf = malloc(end - start + 64);
     uint8_t *bufStart = buf;
     uint8_t *bufEnd = &buf[end - start];
 

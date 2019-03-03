@@ -1,0 +1,4 @@
+Build:
+mkdir cmake-build-release && cd cmake-build-release
+cmake -S ../ -B . -DCMAKE_BUILD_TYPE=Release
+make
