@@ -1,4 +1,7 @@
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
@@ -11,7 +14,7 @@
 #include <smmintrin.h>
 #include "main.h"
 
-void findAnagrams(char* fn, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                   int needleLen, char **results, bool alignStart) {
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
@@ -19,9 +22,7 @@ void findAnagrams(char* fn, int start, int end, char needleCharCounts[256], char
     uint8_t *bufStart = buf;
     uint8_t *bufEnd = &buf[end - start];
 
-    FILE *f = fopen(fn, "rb");
-    fseek(f, start, SEEK_SET);
-    fread(buf, 1, end - start, f);
+	pread(fd, buf, end - start, start);
 
     int resultIndex = 0;
     uint8_t *i = bufStart;
@@ -67,7 +68,7 @@ void findAnagrams(char* fn, int start, int end, char needleCharCounts[256], char
     }
 }
 
-void findAnagramsStni(char* fn, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                       int needleLen, char **results, bool alignStart) {
 #ifdef DEBUG
     fprintf(stderr, "start partition@%016X-%016X\n", start, end);
@@ -80,9 +81,7 @@ void findAnagramsStni(char* fn, int start, int end, char needleCharCounts[256], 
     uint8_t *bufStart = buf;
     uint8_t *bufEnd = &buf[end - start];
 
-    FILE *f = fopen(fn, "rb");
-    fseek(f, start, SEEK_SET);
-    fread(buf, 1, end - start, f);
+	pread(fd, buf, end - start, start);
 
     int resultIndex = 0;
     uint8_t *i = bufStart;
@@ -147,17 +146,17 @@ void findAnagramsStni(char* fn, int start, int end, char needleCharCounts[256], 
     }
 }
 
-void findAnagramsDispatch(char* fn, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
+void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
                           int needleLen, char **results, bool alignStart) {
     if (uniqueCharsLen <= 16 && 0 == getenv("NO_STNI")) {
-        findAnagramsStni(fn, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+        findAnagramsStni(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     } else {
-        findAnagrams(fn, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+        findAnagrams(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     }
 }
 
 void *processPartition(t_partition *partition) {
-    findAnagramsDispatch(partition->fn, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
+    findAnagramsDispatch(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
                          partition->uniqueCharsLen, partition->needleLen, partition->results, true);
 }
 
@@ -185,10 +184,10 @@ int main(int argc, char **argv) {
     struct timeval startTime, endTime;
     gettimeofday(&startTime, NULL);
 
-    FILE *f = fopen(argv[1], "rb");
-    fseek(f, 0, SEEK_END);
-    long dictSize = ftell(f);
-    rewind(f);
+	int f = open(argv[1], O_RDONLY);
+	struct stat s;
+	fstat(f, &s);
+    long dictSize = s.st_size; 
 
     char *needle = argv[2];
     int needleLen = 0;
@@ -216,7 +215,7 @@ int main(int argc, char **argv) {
 
     for (int p = 1; p < partitions; ++p) {
         partitionSpecs[p - 1] = (t_partition) {
-                .fn = argv[1],
+                .fd = f,
                 .start = p * partitionSize,
                 .end = min((p + 1) * partitionSize, dictSize),
                 .charCounts = charCounts,
@@ -229,7 +228,7 @@ int main(int argc, char **argv) {
 
     }
 
-    findAnagramsDispatch(argv[1], 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
+    findAnagramsDispatch(f, 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
                          false);
 
     for (int p = 1; p < partitions; ++p) {
