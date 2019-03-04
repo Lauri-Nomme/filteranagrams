@@ -84,7 +84,7 @@ void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char
     uint8_t* bufStart = buf;
     uint8_t* bufEnd = &buf[end - start];
 
-    pread(fd, buf, end - start, start);
+    pread(fd, buf, end - start + 64, start);
 
     int resultIndex = 0;
     uint8_t* i = bufStart;
@@ -93,7 +93,7 @@ void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char
     if (alignStart)
         goto seekNextRecord;
 
-    while (i < bufEnd) {
+    while (true) {
         __m128i haystackB;
         haystackB = _mm_loadu_si128((const __m128i*)i);
         index = _mm_cmpestri(recordSepB, 1, haystackB, 16,
@@ -132,9 +132,12 @@ void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char
 
             i += index + RECORD_SEP_LEN;
         }
-    }
 
-    results[resultIndex] = 0;
+        if (i >= bufEnd) {
+            results[resultIndex] = 0;
+            return;
+        }
+    }
 }
 
 void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
