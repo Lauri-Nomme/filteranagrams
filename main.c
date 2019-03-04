@@ -81,7 +81,7 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
     uint8_t *bufStart = buf;
     uint8_t *bufEnd = &buf[end - start];
 
-	pread(fd, buf, end - start, start);
+	pread(fd, buf, end - start + 64, start);
 
     int resultIndex = 0;
     uint8_t *i = bufStart;
