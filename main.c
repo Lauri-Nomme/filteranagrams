@@ -71,8 +71,8 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* 
 
 // @todo specialize for needle length in 16b stride
 
-void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
-                      int needleLen, char** results, bool alignStart) {
+void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char* uniqueChars, int uniqueCharsLen,
+                        int needleLen, char** results, bool alignStart) {
 #ifdef DEBUG
     fprintf(stderr, "start partition@%016X-%016X\n", start, end);
 #endif
@@ -89,33 +89,29 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
     int resultIndex = 0;
     uint8_t* i = bufStart;
 
-    // @todo align
+    int index = 0;
+    if (alignStart)
+        goto seekNextRecord;
 
     while (i < bufEnd) {
         __m128i haystackB;
         haystackB = _mm_loadu_si128((const __m128i*)i);
-        int index = _mm_cmpestri(recordSepB, 1, haystackB, 16,
-                                 _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
-        /*if (index == 16) {
-            haystackB = _mm_loadu_si128((const __m128i*)(i + 16));
-            index = 16 + _mm_cmpestri(recordSepB, 1, haystackB, 16,
-                                      _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
-        }*/
+        index = _mm_cmpestri(recordSepB, 1, haystackB, 16,
+                             _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
 
         if (index == needleLen) {
             int mismatch = _mm_cmpestri(uniqueCharsB, uniqueCharsLen, haystackB, 16,
                                         _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT |
                                         _SIDD_NEGATIVE_POLARITY);
 
-            // @todo matching >= 16 chars
-            if (/*i[mismatch] == RECORD_SEP*/mismatch == index) {
+            if (mismatch == index) {
                 for (int jj = 0; jj < mismatch; ++jj) {
                     char c = i[jj];
-                    if (c == RECORD_SEP || 0 > --charCounts[c]) {
-                        for (int j = 0; j < jj; ++j) {
+                    if (0 > --charCounts[c]) {
+                        for (int j = 0; j <= jj; ++j) {
                             ++charCounts[i[j]];
                         }
-                        goto nextRecord;
+                        goto advanceNextRecord;
                     }
                 }
 
@@ -123,12 +119,17 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
                 for (int j = 0; j < mismatch; ++j) {
                     ++charCounts[i[j]];
                 }
-                goto nextRecord;
-            } else {
-                nextRecord:
-                i += index + RECORD_SEP_LEN;
             }
+            advanceNextRecord:
+            i += index + RECORD_SEP_LEN;
         } else {
+            if (index == 16) {
+                seekNextRecord:
+                haystackB = _mm_loadu_si128((const __m128i*)(i + index));
+                index += _mm_cmpestri(recordSepB, 1, haystackB, 16,
+                                      _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
+            }
+
             i += index + RECORD_SEP_LEN;
         }
     }
@@ -138,8 +139,8 @@ void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], ch
 
 void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
                           int needleLen, char** results, bool alignStart) {
-    if (uniqueCharsLen <= 16 && 0 == getenv("NO_STNI")) {
-        findAnagramsStni(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+    if (needleLen < 16 && 0 == getenv("NO_STNI")) {
+        findAnagramsStniS1(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     } else {
         findAnagrams(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     }
@@ -156,7 +157,7 @@ void printResults(long duration, t_partitionResult* results, int partitions, int
 #ifdef DEBUG
         fprintf(stderr, "results for partition %i at %016X\n", p, results[p]);
 #endif
-        for (short i = 0; results[p][i]; i ++) {
+        for (short i = 0; results[p][i]; i++) {
 #ifdef DEBUG
             fprintf(stderr, "[%i] = %016X\n", i, results[p][i]);
 #endif

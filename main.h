@@ -1,19 +1,20 @@
 #ifndef FA_MAIN_H
 #define FA_MAIN_H
 
-typedef char *t_partitionResult[16386];
+typedef char* t_partitionResult[16386];
 typedef struct {
     int fd;
     int start;
     int end;
-    char *charCounts;
-    char *uniqueChars;
+    char* charCounts;
+    char* uniqueChars;
     int uniqueCharsLen;
     int needleLen;
-    char **results;
+    char** results;
 } t_partition;
 
-#ifndef pread
+#if defined(__MINGW32__)
+#warning using emulated pread
 #define pread(fd, buf, cnt, start) { \
     lseek(fd, start, SEEK_SET); \
     read(fd, buf, cnt); \
@@ -21,8 +22,8 @@ typedef struct {
 #endif
 
 #define min(l, r) ((l) < (r) ? (l) : (r))
-#define RECORD_SEP '\n'
-#define RECORD_SEP_LEN 1
+#define RECORD_SEP '\r'
+#define RECORD_SEP_LEN 2
 
 #if defined(_SC_NPROCESSORS_ONLN)
 #define nprocs sysconf(_SC_NPROCESSORS_ONLN)
