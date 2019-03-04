@@ -1,7 +1,7 @@
 #ifndef FA_MAIN_H
 #define FA_MAIN_H
 
-typedef char *t_partitionResult[16386 * 2];
+typedef char *t_partitionResult[16386];
 typedef struct {
     int fd;
     int start;
@@ -13,9 +13,16 @@ typedef struct {
     char **results;
 } t_partition;
 
+#ifndef pread
+#define pread(fd, buf, cnt, start) { \
+    lseek(fd, start, SEEK_SET); \
+    read(fd, buf, cnt); \
+}
+#endif
+
 #define min(l, r) ((l) < (r) ? (l) : (r))
-#define RECORD_SEP '\r'
-#define RECORD_SEP_LEN 2
+#define RECORD_SEP '\n'
+#define RECORD_SEP_LEN 1
 
 #if defined(_SC_NPROCESSORS_ONLN)
 #define nprocs sysconf(_SC_NPROCESSORS_ONLN)

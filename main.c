@@ -1,3 +1,5 @@
+#define _XOPEN_SOURCE 500
+
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -14,18 +16,18 @@
 #include <smmintrin.h>
 #include "main.h"
 
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
-                  int needleLen, char **results, bool alignStart) {
+void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+                  int needleLen, char** results, bool alignStart) {
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t *buf = malloc(end - start);
-    uint8_t *bufStart = buf;
-    uint8_t *bufEnd = &buf[end - start];
+    uint8_t* buf = malloc(end - start);
+    uint8_t* bufStart = buf;
+    uint8_t* bufEnd = &buf[end - start];
 
-	pread(fd, buf, end - start, start);
+    pread(fd, buf, end - start, start);
 
     int resultIndex = 0;
-    uint8_t *i = bufStart;
+    uint8_t* i = bufStart;
     if (alignStart)
         goto nextRecord;
 
@@ -34,8 +36,7 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *
         uint8_t c = *i;
         if (c == RECORD_SEP) {
             if (len == needleLen) {
-                results[resultIndex++] = (char *) bufStart;
-                *(int *) &results[resultIndex++] = len;
+                results[resultIndex++] = (char*)bufStart;
             }
 
             goto advance;
@@ -51,7 +52,7 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *
         }
         continue;
         advance:
-        for (uint8_t *j = bufStart; j <= i; ++j) {
+        for (uint8_t* j = bufStart; j <= i; ++j) {
             ++charCounts[*j];
         }
         nextRecord:
@@ -68,86 +69,75 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char *
     }
 }
 
-void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
-                      int needleLen, char **results, bool alignStart) {
+// @todo specialize for needle length in 16b stride
+
+void findAnagramsStni(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+                      int needleLen, char** results, bool alignStart) {
 #ifdef DEBUG
     fprintf(stderr, "start partition@%016X-%016X\n", start, end);
 #endif
-    __m128i uniqueCharsB = _mm_loadu_si128((const __m128i *) uniqueChars);
+    __m128i uniqueCharsB = _mm_loadu_si128((const __m128i*)uniqueChars);
     __m128i recordSepB = _mm_set1_epi8(RECORD_SEP);
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t *buf = malloc(end - start + 64);
-    uint8_t *bufStart = buf;
-    uint8_t *bufEnd = &buf[end - start];
+    uint8_t* buf = malloc(end - start + 64);
+    uint8_t* bufStart = buf;
+    uint8_t* bufEnd = &buf[end - start];
 
-	pread(fd, buf, end - start, start);
+    pread(fd, buf, end - start, start);
 
     int resultIndex = 0;
-    uint8_t *i = bufStart;
+    uint8_t* i = bufStart;
 
-    if (alignStart)
-        goto nextRecord;
+    // @todo align
 
-    while (true) {
+    while (i < bufEnd) {
         __m128i haystackB;
-        haystackB = _mm_loadu_si128((const __m128i *) i);
-        int index = _mm_cmpestri(uniqueCharsB, uniqueCharsLen, haystackB, 16,
-                                 _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT |
-                                 _SIDD_NEGATIVE_POLARITY);
+        haystackB = _mm_loadu_si128((const __m128i*)i);
+        int index = _mm_cmpestri(recordSepB, 1, haystackB, 16,
+                                 _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
+        /*if (index == 16) {
+            haystackB = _mm_loadu_si128((const __m128i*)(i + 16));
+            index = 16 + _mm_cmpestri(recordSepB, 1, haystackB, 16,
+                                      _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
+        }*/
 
-        // @todo matching >= 16 chars
-        if (i[index] == RECORD_SEP) {
-            char *recordStart = i;
-            int len = 0;
-            do {
-                char c = *i;
-                if (c == RECORD_SEP) {
-                    if (len == needleLen) {
-#ifdef DEBUG
-                        fprintf(stderr, "partition@%016X inserting result@%08X[%i] = %016X (%i)\n", start, results, resultIndex, recordStart, len);
-#endif
-                        results[resultIndex++] = recordStart;
-                        *(int *) &results[resultIndex++] = len;
+        if (index == needleLen) {
+            int mismatch = _mm_cmpestri(uniqueCharsB, uniqueCharsLen, haystackB, 16,
+                                        _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT |
+                                        _SIDD_NEGATIVE_POLARITY);
+
+            // @todo matching >= 16 chars
+            if (/*i[mismatch] == RECORD_SEP*/mismatch == index) {
+                for (int jj = 0; jj < mismatch; ++jj) {
+                    char c = i[jj];
+                    if (c == RECORD_SEP || 0 > --charCounts[c]) {
+                        for (int j = 0; j < jj; ++j) {
+                            ++charCounts[i[j]];
+                        }
+                        goto nextRecord;
                     }
-                    for (uint8_t *j = recordStart; j < i; ++j) {
-                        ++charCounts[*j];
-                    }
-                    i += RECORD_SEP_LEN;
-                    goto begin;
-                } else if (0 > --charCounts[c] || ++len > needleLen) {
-                    for (uint8_t *j = recordStart; j <= i; ++j) {
-                        ++charCounts[*j];
-                    }
-                    ++i;
-                    goto nextRecord;
                 }
-                ++i;
-            } while (true);
+
+                results[resultIndex++] = i;
+                for (int j = 0; j < mismatch; ++j) {
+                    ++charCounts[i[j]];
+                }
+                goto nextRecord;
+            } else {
+                nextRecord:
+                i += index + RECORD_SEP_LEN;
+            }
         } else {
-            do {
-                index = _mm_cmpestri(recordSepB, 1, haystackB, 16,
-                                     _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_LEAST_SIGNIFICANT);
-                if (index < 16) {
-                    i += index + RECORD_SEP_LEN;
-                    break;
-                } else {
-                    i += 16;
-                    nextRecord:
-                    haystackB = _mm_loadu_si128((const __m128i *) i);
-                }
-            } while (true);
-        }
-        begin:
-        if (i >= bufEnd) {
-            results[resultIndex] = 0;
-            return;
+            i += index + RECORD_SEP_LEN;
         }
     }
+
+    results[resultIndex] = 0;
 }
 
-void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char *uniqueChars, int uniqueCharsLen,
-                          int needleLen, char **results, bool alignStart) {
+void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+                          int needleLen, char** results, bool alignStart) {
     if (uniqueCharsLen <= 16 && 0 == getenv("NO_STNI")) {
         findAnagramsStni(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     } else {
@@ -155,41 +145,41 @@ void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256]
     }
 }
 
-void *processPartition(t_partition *partition) {
+void* processPartition(t_partition* partition) {
     findAnagramsDispatch(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
                          partition->uniqueCharsLen, partition->needleLen, partition->results, true);
 }
 
-void printResults(long duration, t_partitionResult *results, int partitions) {
+void printResults(long duration, t_partitionResult* results, int partitions, int needleLen) {
     printf("%ld", duration);
     for (short p = 0; p < partitions; ++p) {
 #ifdef DEBUG
         fprintf(stderr, "results for partition %i at %016X\n", p, results[p]);
 #endif
-        for (short i = 0; results[p][i]; i += 2) {
+        for (short i = 0; results[p][i]; i ++) {
 #ifdef DEBUG
             fprintf(stderr, "[%i] = %016X\n", i, results[p][i]);
 #endif
-            printf(",%.*s", *(int *) &results[p][i + 1], results[p][i]);
+            printf(",%.*s", needleLen, results[p][i]);
         }
     }
     printf("\n");
 }
 
-long duration(struct timeval *start, struct timeval *end) {
+long duration(struct timeval* start, struct timeval* end) {
     return ((end->tv_sec - start->tv_sec) * 1000000) + (end->tv_usec - start->tv_usec);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     struct timeval startTime, endTime;
     gettimeofday(&startTime, NULL);
 
-	int f = open(argv[1], O_RDONLY);
-	struct stat s;
-	fstat(f, &s);
-    long dictSize = s.st_size; 
+    int f = open(argv[1], O_RDONLY);
+    struct stat s;
+    fstat(f, &s);
+    long dictSize = s.st_size;
 
-    char *needle = argv[2];
+    char* needle = argv[2];
     int needleLen = 0;
     char charCounts[256] = {};
     char uniqueChars[256] = {};
@@ -214,7 +204,7 @@ int main(int argc, char **argv) {
     int partitionSize = dictSize / partitions;
 
     for (int p = 1; p < partitions; ++p) {
-        partitionSpecs[p - 1] = (t_partition) {
+        partitionSpecs[p - 1] = (t_partition){
                 .fd = f,
                 .start = p * partitionSize,
                 .end = min((p + 1) * partitionSize, dictSize),
@@ -224,7 +214,7 @@ int main(int argc, char **argv) {
                 .needleLen = needleLen,
                 .results = results[p]
         };
-        pthread_create(&threads[p - 1], NULL, (void *(*)(void *)) processPartition, &partitionSpecs[p - 1]);
+        pthread_create(&threads[p - 1], NULL, (void* (*)(void*))processPartition, &partitionSpecs[p - 1]);
 
     }
 
@@ -236,5 +226,5 @@ int main(int argc, char **argv) {
     }
 
     gettimeofday(&endTime, NULL);
-    printResults(duration(&startTime, &endTime), results, partitions);
+    printResults(duration(&startTime, &endTime), results, partitions, needleLen);
 }
