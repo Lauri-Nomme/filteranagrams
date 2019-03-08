@@ -3,7 +3,7 @@
 
 typedef char* t_partitionResult[16386];
 typedef struct {
-    int fd;
+    uint8_t *input;
     int start;
     int end;
     char* charCounts;

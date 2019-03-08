@@ -14,17 +14,16 @@
 #include <pthread.h>
 #include <emmintrin.h>
 #include <smmintrin.h>
+#include <sys/mman.h>
 #include "main.h"
 
-void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+void findAnagrams(uint8_t *input, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
                   int needleLen, char** results, bool alignStart) {
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t* buf = malloc(end - start);
+    uint8_t* buf = &input[start];
     uint8_t* bufStart = buf;
     uint8_t* bufEnd = &buf[end - start];
-
-    pread(fd, buf, end - start, start);
 
     int resultIndex = 0;
     uint8_t* i = bufStart;
@@ -71,7 +70,7 @@ void findAnagrams(int fd, int start, int end, char needleCharCounts[256], char* 
 
 // @todo specialize for needle length in 16b stride
 
-void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char* uniqueChars, int uniqueCharsLen,
+void findAnagramsStniS1(uint8_t *input, int start, int end, char* needleCharCounts, char* uniqueChars, int uniqueCharsLen,
                         int needleLen, char** results, bool alignStart) {
 #ifdef DEBUG
     fprintf(stderr, "start partition@%016X-%016X\n", start, end);
@@ -80,11 +79,9 @@ void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char
     __m128i recordSepB = _mm_set1_epi8(RECORD_SEP);
     char charCounts[256];
     memcpy(charCounts, needleCharCounts, sizeof(charCounts));
-    uint8_t* buf = malloc(end - start + 64);
+    uint8_t* buf = &input[start];
     uint8_t* bufStart = buf;
     uint8_t* bufEnd = &buf[end - start];
-
-    pread(fd, buf, end - start + 64, start);
 
     int resultIndex = 0;
     uint8_t* i = bufStart;
@@ -140,17 +137,17 @@ void findAnagramsStniS1(int fd, int start, int end, char* needleCharCounts, char
     }
 }
 
-void findAnagramsDispatch(int fd, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
+void findAnagramsDispatch(uint8_t *input, int start, int end, char needleCharCounts[256], char* uniqueChars, int uniqueCharsLen,
                           int needleLen, char** results, bool alignStart) {
     if (needleLen < 16 && 0 == getenv("NO_STNI")) {
-        findAnagramsStniS1(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+        findAnagramsStniS1(input, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     } else {
-        findAnagrams(fd, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
+        findAnagrams(input, start, end, needleCharCounts, uniqueChars, uniqueCharsLen, needleLen, results, alignStart);
     }
 }
 
 void* processPartition(t_partition* partition) {
-    findAnagramsDispatch(partition->fd, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
+    findAnagramsDispatch(partition->input, partition->start, partition->end, partition->charCounts, partition->uniqueChars,
                          partition->uniqueCharsLen, partition->needleLen, partition->results, true);
 }
 
@@ -183,6 +180,8 @@ int main(int argc, char** argv) {
     fstat(f, &s);
     long dictSize = s.st_size;
 
+    uint8_t *input = mmap(NULL, dictSize, PROT_READ, MAP_PRIVATE, f, 0);
+
     char* needle = argv[2];
     int needleLen = 0;
     char charCounts[256] = {};
@@ -209,7 +208,7 @@ int main(int argc, char** argv) {
 
     for (int p = 1; p < partitions; ++p) {
         partitionSpecs[p - 1] = (t_partition){
-                .fd = f,
+                .input = input,
                 .start = p * partitionSize,
                 .end = min((p + 1) * partitionSize, dictSize),
                 .charCounts = charCounts,
@@ -222,7 +221,7 @@ int main(int argc, char** argv) {
 
     }
 
-    findAnagramsDispatch(f, 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
+    findAnagramsDispatch(input, 0, partitionSize, charCounts, uniqueChars, uniqueCharsLen, needleLen, results[0],
                          false);
 
     for (int p = 1; p < partitions; ++p) {
